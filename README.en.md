@@ -51,6 +51,10 @@ The app is ad-hoc signed and not notarized, so Gatekeeper blocks the first open 
 
 The undocumented-behaviour lessons this tool accumulated — the internal display vanishing from the online list, hardware mirroring making `enable` silently no-op, commits reporting success while panels sleep, `IOPMAssertionDeclareUserActivity` waking the whole machine — are written up in [NOTES.md](NOTES.md) (Chinese).
 
+## Build status
+
+Pushes to `main` are built by GitHub Actions on a macOS arm64 runner, with the app and CLI uploaded as artifacts; pushing a `v*` tag publishes them to a GitHub Release automatically.
+
 ## License
 
 MIT
