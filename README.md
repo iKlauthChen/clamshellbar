@@ -1,5 +1,7 @@
 # ClamshellBar
 
+[English](README.en.md) · **中文**
+
 外接屏一有信号，就把 MacBook 自带屏真正关掉——等同合盖（clamshell），但盖子照旧开着。菜单栏里点一下，或者让它自动跟随插拔。
 
 ![icon](Resources/icon.svg)
@@ -48,6 +50,10 @@ ClamshellBar 走的是另一条路：调用 `CGSConfigureDisplayEnabled` 在内�
 ## 实现要点
 
 若干与这套私有接口打交道时踩出来的经验，写在 [NOTES.md](NOTES.md) 里：内置屏关闭后会从在线列表消失、硬件镜像会让 `enable` 静默失效、显示器睡着时 commit 会返回成功却不生效、`IOPMAssertionDeclareUserActivity` 会把整机从睡眠中叫醒等等。
+
+## 构建状态
+
+推送到 `main` 后用 GitHub Actions 在 macOS runner 上编译并上传产物；打 `v*` 标签则自动把 app 与 CLI 附到 Release。
 
 ## License
 
