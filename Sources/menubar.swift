@@ -259,7 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func poll(forceRestore: Bool = false) {
         guard autoMode, !sleeping else { return }
-        if lidClosed() || displaysAsleep() { return }   // 合盖/息屏：这不是该动屏的时候
+        if lidClosed() { return }                       // 合盖：内屏本来就该黑，别去"恢复"
         if let until = manualOverrideUntil, Date() < until { return }
         guard !inFlight, let b = currentBuiltin() else { return }
 
@@ -267,6 +267,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 只认"有信号"的外接：投影仪只插线不通电时它会挂在列表里但没模式，
         // 这种情况不关内屏（关了就没画面），也不算"有外接"。
         let extIDs = signalExternals()
+        // 显示器全部休眠时一般不动手；但"内屏关着且没有任何有信号的外接"本身就是黑屏，
+        // 也正是最该动手的时候。早先这里对所有情况直接 return，于是拔线后内屏一直不亮。
+        if displaysAsleep(), builtinOn || !extIDs.isEmpty { return }
         let extText = extIDs.map(String.init).joined(separator: ",")
         signalStreak = extIDs.isEmpty ? 0 : signalStreak + 1
         var externalUsable = !extIDs.isEmpty && !(distrustUntil.map { Date() < $0 } ?? false)
