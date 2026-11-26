@@ -137,6 +137,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var sleeping = false
     var userActivityAssertion: IOPMAssertionID?
     var lastWakeDeclare = Date.distantPast
+    /// 内置屏是否由我们关掉。息屏时 CGDisplayIsActive 对每块屏都返回 0，「关着」与「只是睡着」
+    /// 因此无法区分；没有这条自己记的账，普通息屏会被当成拔线后的黑屏而反复点亮。
+    var disabledByUs: Bool {
+        get { UserDefaults.standard.bool(forKey: "disabledByUs") }
+        set { UserDefaults.standard.set(newValue, forKey: "disabledByUs") }
+    }
+    /// 恢复失败后的退避：err=1014 会一直失败，不能每轮都拿声明用户活动去换一次亮屏。
+    var restoreFails = 0
+    var nextRestoreAt = Date.distantPast
     /// 关闭失败被回退后的冷静期。期间不再自动关内屏，避免「刚救回来又关掉」的拉锯。
     var noCloseUntil = Date.distantPast
     /// 上一次看到的在线外接集合，用来分辨「真的插了新东西」和「同一块屏在抖」
@@ -179,6 +188,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 现在只在"真的要唤醒面板"时调，一分钟最多一次，并且先释放上一条。
     func wakeDisplays() {
         guard !sleeping, !lidClosed() else { return }
+        // 只在屏确实睡着、或内屏被我们关掉后离线（此时 online 列表为空）时才需要声明活动。
+        // 屏亮着还去声明，只会平白重置空闲计时、把息屏推后。
+        guard displaysAsleep() || disabledByUs else { return }
         guard Date().timeIntervalSince(lastWakeDeclare) > 60 else { return }
         lastWakeDeclare = Date()
         if let a = userActivityAssertion { IOPMAssertionRelease(a); userActivityAssertion = nil }
@@ -202,6 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             logThrottled("\(reason)：先解镜像(commit=\(d))再关闭 err=\(e) → off=\(ok)")
         }
         inFlight = false
+        if ok { disabledByUs = true }
         logThrottled(ok ? "\(reason)：关闭内置屏 ID=\(id) 成功"
                         : "\(reason)：关闭内置屏 ID=\(id) 失败 err=\(e)")
         return ok
@@ -209,7 +222,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @discardableResult
     func restoreBuiltinNow(_ id: CGDirectDisplayID, reason: String) -> Bool {
-        if CGDisplayIsActive(id) != 0 && !isMirrored(id) && !modeLooksForeign(id) { return true }
+        if CGDisplayIsActive(id) != 0 && !isMirrored(id) && !modeLooksForeign(id) {
+            disabledByUs = false
+            return true
+        }
         guard !inFlight else { return false }
         wakeDisplays()
         usleep(400_000)
@@ -218,6 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         inFlight = false
         usleep(700_000)
         if CGDisplayIsActive(id) != 0 && !isMirrored(id) {
+            disabledByUs = false
             logThrottled("\(reason)：解镜像后内置屏已恢复 commit=\(d)")
             return true
         }
@@ -233,8 +250,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ok = CGDisplayIsActive(id) != 0
         }
         inFlight = false
+        if ok { disabledByUs = false }
         logThrottled(ok ? "\(reason)：启用内置屏 ID=\(id) 成功"
-                        : "\(reason)：启用内置屏 ID=\(id) 失败 err=\(e)（下一轮再试）")
+                        : "\(reason)：启用内置屏 ID=\(id) 失败 err=\(e)（退避后重试）")
         return ok
     }
 
@@ -267,9 +285,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 只认"有信号"的外接：投影仪只插线不通电时它会挂在列表里但没模式，
         // 这种情况不关内屏（关了就没画面），也不算"有外接"。
         let extIDs = signalExternals()
-        // 显示器全部休眠时一般不动手；但"内屏关着且没有任何有信号的外接"本身就是黑屏，
-        // 也正是最该动手的时候。早先这里对所有情况直接 return，于是拔线后内屏一直不亮。
-        if displaysAsleep(), builtinOn || !extIDs.isEmpty { return }
+        // 息屏是正常状态：屏睡着时 CGDisplayIsActive 对每块屏都返回 0，
+        // 「内屏被关掉」与「内屏只是睡着」无从区分。只有确实由我们关过内屏、
+        // 且外接已整个离开在线列表，才可能是拔线后的黑屏；其余一律不做声——
+        // 声明用户活动会点亮屏幕，正是每次息屏后自己把自己叫醒的来源。
+        if displaysAsleep(), !forceRestore {
+            guard disabledByUs, externalDisplays().isEmpty else { return }
+        }
         let extText = extIDs.map(String.init).joined(separator: ",")
         signalStreak = extIDs.isEmpty ? 0 : signalStreak + 1
         var externalUsable = !extIDs.isEmpty && !(distrustUntil.map { Date() < $0 } ?? false)
@@ -317,7 +339,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 没有可用外接：内置屏必须亮着，且不能是跟着已拔掉的屏跑的黑镜像
         if !builtinOn || forceRestore || modeLooksForeign(b) || isMirrored(b) {
-            if restoreBuiltinNow(b, reason: "无活动外接 → 恢复内置屏") { refresh() }
+            if forceRestore { nextRestoreAt = .distantPast }
+            guard Date() >= nextRestoreAt else { return }
+            if restoreBuiltinNow(b, reason: "无活动外接 → 恢复内置屏") {
+                restoreFails = 0
+                nextRestoreAt = .distantPast
+                refresh()
+            } else {
+                // err=1014 之类的失败会一直失败：退避 60/120/240/480/960 秒，别每分钟拿亮屏换一次重试
+                restoreFails = min(restoreFails + 1, 5)
+                nextRestoreAt = Date().addingTimeInterval(pow(2, Double(restoreFails)) * 30)
+            }
         }
     }
 
@@ -326,6 +358,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func displayChanged() {
         manualOverrideUntil = nil
         disableFails = 0
+        restoreFails = 0
+        nextRestoreAt = .distantPast
         let now = Set(externalDisplays())
         let appeared = !now.subtracting(lastExternalSet).isEmpty
         lastExternalSet = now

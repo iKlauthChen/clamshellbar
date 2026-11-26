@@ -55,6 +55,10 @@ IOPMAssertionDeclareUserActivity("ClamshellBar" as CFString, kIOPMUserActiveLoca
 
 现在的规则：只在真要动面板时声明，一分钟最多一次，声明前释放上一条；轮询入口先过三道闸门——合盖（`AppleClamshellState`）、显示器全部 `CGDisplayIsAsleep`、收到 `NSWorkspace.willSleepNotification` 之后一律不做事，`didWakeNotification` 时再恢复。
 
+息屏闸门有个例外：拔线后内屏关着、外接也不在，看起来和「普通息屏」一模一样（睡着时 `CGDisplayIsActive` 对每块屏都返回 0）。判据不能看屏的 active，只能看自己记的账：`disableBuiltinNow` 成功时把 `disabledByUs` 写进 UserDefaults，恢复成功时清掉。息屏时只有「确实由我们关过内屏、且外接已整个离开在线列表」才放行去救；显示器重配置事件（`displayChanged` → `poll(forceRestore:)`）可以跳过闸门。否则每轮轮询都会把一次普通息屏当成黑屏，声明用户活动、点亮屏、屏再睡、再点——2026-11-26 上午实测 66 秒一轮，九轮才停。
+
+启用失败（`CGError 1014`）不再「下一轮再试」，而是 60/120/240/480/960 秒退避：屏没真正醒来时 enable 必然失败，拿亮屏换重试是最坏的交换。
+
 ## 同一时刻只能有一个写入者
 
 菜单栏应用和 launchd 里的守护进程同时跑，两边各自开显示事务会互相作废，满屏 `CGError 1001`，开关全落不了地。进程内用 `inFlight` 保证串行；如果装了别的显示工具（Lunar、BetterDisplay、DisplayLink 之类），也要留意它们是否在同时改配置。
